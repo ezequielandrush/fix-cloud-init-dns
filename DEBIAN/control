@@ -1,0 +1,15 @@
+Package: fix-cloud-init-dns
+Version: 1.0.0
+Architecture: all
+Maintainer: Tu Nombre <tu@email.com>
+Depends: resolvconf, ifupdown, cloud-init
+Description: Fix cloud-init DNS misplacement in ENI config for Proxmox
+ Fixes a bug in cloud-init's ENI renderer on Proxmox where the
+ dns-nameservers and dns-search directives are placed under the
+ loopback interface (lo) instead of the physical interface. This
+ causes the system to boot without functional DNS resolution.
+ .
+ A systemd service runs after cloud-init-local.service and before
+ networking.service to correct the generated interfaces file before
+ ifupdown brings up the network.
+

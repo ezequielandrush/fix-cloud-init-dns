@@ -1,0 +1,14 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+    remove|upgrade)
+        # Disable the service so it no longer runs on boot
+        systemctl disable fix-cloud-init-dns.service
+
+        # Stop the service if it's currently running
+        systemctl stop fix-cloud-init-dns.service || true
+    ;;
+esac
+
+exit 0
