@@ -1,0 +1,100 @@
+#!/bin/bash
+# /etc/network/if-pre-up.d/fix-cloud-init-dns
+#
+# Corrige un bug de cloud-init con el renderer ENI en Proxmox:
+# cloud-init coloca dns-nameservers y dns-search bajo la interfaz
+# loopback (lo) en lugar de la interfaz física, lo que hace que
+# ifupdown ignore completamente la configuración DNS.
+#
+# Puede ser invocado de dos formas:
+#   1. Por ifupdown antes de levantar una interfaz (via if-pre-up.d)
+#      En este caso $IFACE viene seteada por ifupdown.
+#   2. Por systemd antes de que networking.service levante la red
+#      En este caso $IFACE no está seteada y se detecta automáticamente.
+#
+# Requiere: resolvconf instalado para que ifupdown procese dns-nameservers
+
+CLOUD_INIT_NET="/etc/network/interfaces.d/50-cloud-init"
+LOCK_FILE="/run/cloud-init-dns-fix.done"
+
+# Si cloud-init no generó el archivo de red, no hay nada que corregir.
+if [ ! -f "$CLOUD_INIT_NET" ]; then
+    exit 0
+fi
+
+# El script puede correr desde ifupdown (una vez por interfaz) o desde
+# systemd. Usamos un lock file en /run/ (que se limpia en cada reboot)
+# para asegurarnos de correr una sola vez por boot.
+if [ -f "$LOCK_FILE" ]; then
+    exit 0
+fi
+
+# Si $IFACE no está seteada (invocado desde systemd),
+# detectar la primera interfaz física del archivo.
+# Busca líneas "iface X" que no sean "iface lo" y toma la primera.
+if [ -z "$IFACE" ]; then
+    IFACE=$(grep '^iface ' "$CLOUD_INIT_NET" | grep -v '^iface lo ' | head -1 | awk '{print $2}')
+fi
+
+# Si la interfaz es loopback, no hay nada que corregir.
+if [ "$IFACE" = "lo" ]; then
+    exit 0
+fi
+
+# Si no encontramos ninguna interfaz física, no hay nada que hacer.
+if [ -z "$IFACE" ]; then
+    exit 0
+fi
+
+# Extraer las líneas DNS mal ubicadas bajo loopback.
+# sed 's/^\s*//' elimina los espacios del principio para evitar
+# doble indentación al reinsertar las líneas.
+# '|| true' evita que el script falle si grep no encuentra el patrón
+# (grep devuelve código de error cuando no hay matches).
+DNS_NAMESERVERS=$(grep '^\s*dns-nameservers' "$CLOUD_INIT_NET" | sed 's/^\s*//' || true)
+DNS_SEARCH=$(grep '^\s*dns-search' "$CLOUD_INIT_NET" | sed 's/^\s*//' || true)
+
+# Si no hay configuración DNS en el archivo, no hay nada que corregir.
+if [ -z "$DNS_NAMESERVERS" ] && [ -z "$DNS_SEARCH" ]; then
+    exit 0
+fi
+
+# Crear un archivo temporal para escribir el resultado.
+# Nunca modificamos el archivo original directamente — si algo falla
+# a mitad de camino, el original queda intacto.
+TMP_FILE=$(mktemp)
+
+# Paso 1: copiar el archivo original al temporal eliminando todas las
+# líneas dns-nameservers y dns-search sin importar dónde estén.
+# El ';' encadena dos comandos sed en una sola pasada:
+#   /^\s*dns-nameservers/d  -> elimina líneas que empiecen con dns-nameservers (con o sin espacios)
+#   /^\s*dns-search/d       -> elimina líneas que empiecen con dns-search (con o sin espacios)
+sed '/^\s*dns-nameservers/d;/^\s*dns-search/d' "$CLOUD_INIT_NET" > "$TMP_FILE"
+
+# Paso 2: insertar dns-nameservers y dns-search después de la línea "iface $IFACE".
+# Se hace en un solo append para garantizar el orden correcto (dns-nameservers primero).
+# Flags usados:
+#   -i          -> modifica el archivo en lugar de imprimir a stdout
+#   /iface $IFACE /  -> busca la línea que contiene la definición de la interfaz actual
+#   a\          -> append: agrega líneas DESPUÉS del match
+#   \n          -> separa las dos líneas dentro del mismo append
+#   "    "      -> 4 espacios de indentación (los espacios originales ya fueron eliminados)
+sed -i "/iface $IFACE /a\\    $DNS_NAMESERVERS\n    $DNS_SEARCH" "$TMP_FILE"
+
+# Verificar que el archivo temporal no quedó vacío.
+# -s verifica que el archivo existe Y tiene tamaño mayor a cero.
+# Si está vacío, algo salió mal: descartamos el temporal y salimos con error.
+if [ ! -s "$TMP_FILE" ]; then
+    rm "$TMP_FILE"
+    exit 1
+fi
+
+# Reemplazar el archivo original con el temporal corregido.
+# mv es una operación atómica: o reemplaza completo o no reemplaza,
+# nunca deja el archivo a medias.
+mv "$TMP_FILE" "$CLOUD_INIT_NET"
+
+# Crear el lock file para que el script no vuelva a correr en este boot.
+# Lo creamos en /run/ porque ese directorio se limpia en cada reboot,
+# así el fix corre en cada boot nuevo.
+touch "$LOCK_FILE"

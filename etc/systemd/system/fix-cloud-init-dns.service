@@ -1,0 +1,13 @@
+[Unit]
+Description=Fix cloud-init DNS placement in ENI config
+After=cloud-init-local.service
+Before=networking.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/etc/network/if-pre-up.d/fix-cloud-init-dns
+RemainAfterExit=yes
+
+[Install]
+WantedBy=network.target

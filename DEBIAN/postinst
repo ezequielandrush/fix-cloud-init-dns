@@ -1,0 +1,23 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+    configure)
+        # Reload systemd to pick up the new service file
+        systemctl daemon-reload
+
+        # Enable the service so it runs on every boot
+        systemctl enable fix-cloud-init-dns.service
+
+        # Run the fix immediately in case the bug is already present
+        # IFACE is intentionally unset so the script auto-detects the interface
+        /etc/network/if-pre-up.d/fix-cloud-init-dns
+
+        # If the network file was corrected, reload networking
+        if [ -f /run/cloud-init-dns-fix.done ]; then
+            systemctl restart networking.service || true
+        fi
+    ;;
+esac
+
+exit 0
